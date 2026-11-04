@@ -1,0 +1,20 @@
+# Local Codex/agent and cloud-tool state; never publish these directories.
+.agents/
+.aws/
+.codex/
+
+# Local credentials and environment overrides.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*secret*
+*token*
+
+# Runtime and generated local files.
+*.log
+temp_disp.txt
+node_modules/
+dist/
+build/
