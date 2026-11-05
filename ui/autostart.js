@@ -17,6 +17,7 @@ import * as ModalDialog from 'resource:///org/gnome/shell/ui/modalDialog.js';
 
 import * as Autoclose from './autoclose.js';
 import * as RestoreSession from '../restoreSession.js';
+import * as SaveSession from '../saveSession.js';
 import * as Constants from '../constants.js';
 
 import * as Log from '../utils/log.js';
@@ -39,6 +40,8 @@ export const AutostartServiceProvider = GObject.registerClass(
 
             this._autostartService = null;
             this._autostartDbusImpl = null;
+            this._manualDbusImpl = null;
+            this._disabled = false;
 
             // https://gjs.guide/guides/gio/dbus.html#exporting-interfaces
             this._dbusNameOwnerId = Gio.bus_own_name(
@@ -54,6 +57,10 @@ export const AutostartServiceProvider = GObject.registerClass(
         }
 
         onBusAcquired(connection, name) {
+            if (this._disabled) {
+                return;
+            }
+
             this._log.debug(`DBus bus with name ${name} acquired!`);
 
             this._autostartService = new AutostartService();
@@ -61,7 +68,14 @@ export const AutostartServiceProvider = GObject.registerClass(
             // Gio.DBusExportedObject.wrapJSObject(interfaceInfo, jsObj) is a private method of gjs
             // See: https://gitlab.gnome.org/GNOME/gjs/-/blob/master/modules/core/overrides/Gio.js#L391
             this._autostartDbusImpl = Gio.DBusExportedObject.wrapJSObject(this._autostartDbusXml, this._autostartService);
+            this._autostartService._dbus = this._autostartDbusImpl;
             this._autostartDbusImpl.export(connection, '/org/gnome/Shell/Extensions/awsm');
+            this._manualDbusImpl = Gio.DBusExportedObject.wrapJSObject(
+                '<node><interface name="org.gnome.Shell.Extensions.awsm">' +
+                '<method name="RestoreSession"><arg type="s" direction="in"/>' +
+                '<arg type="s" direction="out"/></method></interface></node>',
+                {RestoreSession: name => this._autostartService.restoreNamedSession(name)});
+            this._manualDbusImpl.export(connection, '/org/gnome/Shell/Extensions/awsm');
 
         }
     
@@ -74,15 +88,33 @@ export const AutostartServiceProvider = GObject.registerClass(
         }
 
         disable() {
+            this._disabled = true;
+
+            if (this._manualDbusImpl) {
+                this._manualDbusImpl.unexport();
+                this._manualDbusImpl = null;
+            }
+
             // To avoid the below error
             // JS ERROR: Gio.IOErrorEnum: An object is already exported for the interface org.gnome.Shell.Extensions.awsm.Autostart at /org/gnome/Shell/Extensions/awsm
             // when disable and enable this extension
-            this._autostartDbusImpl.flush();
-            this._autostartDbusImpl.unexport();
+            if (this._autostartDbusImpl) {
+                this._autostartDbusImpl.flush();
+                this._autostartDbusImpl.unexport();
+                this._autostartDbusImpl = null;
+            }
 
             if (this._autostartService) {
                 this._autostartService._disable();
                 this._autostartService = null;
+            }
+
+            // Release the well-known name as part of the extension lifecycle.
+            // Leaving the owner active across disable/enable can re-export the
+            // next XML interface against an older JS service object.
+            if (this._dbusNameOwnerId) {
+                Gio.bus_unown_name(this._dbusNameOwnerId);
+                this._dbusNameOwnerId = 0;
             }
         }
     });
@@ -100,9 +132,24 @@ const AutostartService = GObject.registerClass(
 
             this._settings = PrefsUtils.getSettings();
             this._sessionName = this._settings.get_string(Constants.PREFS_SETTING_AUTORESTORE_SESSIONS);
+            this._saveSession = new SaveSession.SaveSession(true);
+            this._dbus = null;
+            this._saveInFlight = new Set();
         }
 
         // Call this method asynchronously through `gdbus call --session --dest org.gnome.Shell.Extensions.awsm --object-path /org/gnome/Shell/Extensions/awsm --method org.gnome.Shell.Extensions.awsm.Autostart.RestoreSession` 
+        restoreNamedSession(sessionName) {
+            const name = String(sessionName ?? '').trim();
+            if (!name || name === '.' || name === '..' || name.includes('/') || name.includes('\\'))
+                return 'ERROR: invalid session name';
+            const path = GLib.build_filenamev([FileUtils.get_sessions_path(), name]);
+            if (!GLib.file_test(path, GLib.FileTest.IS_REGULAR))
+                return `ERROR: session '${name}' not found`;
+            const restore = new RestoreSession.RestoreSession();
+            restore.restoreSession(name);
+            return `Restore started for '${name}'`;
+        }
+
         RestoreSession() {
             const enableRestoreSelectedSession = this._settings.get_boolean('enable-autorestore-sessions');
             if (!enableRestoreSelectedSession) {
@@ -155,6 +202,43 @@ const AutostartService = GObject.registerClass(
             return this._restorePreviousSession(removeAfterRestore);
         }
 
+        // Starts a complete live-window save without requiring panel interaction.
+        // The returned message is immediate; SessionSaved signals completion.
+        SaveSession(sessionName) {
+            const normalizedName = String(sessionName ?? '').trim();
+            if (!normalizedName || normalizedName === '.' || normalizedName === '..' ||
+                normalizedName.includes('/') || normalizedName.includes('\\')) {
+                return 'ERROR: invalid session name';
+            }
+
+            if (this._saveInFlight.has(normalizedName)) {
+                return `Saving session '${normalizedName}' is already in progress`;
+            }
+
+            this._saveInFlight.add(normalizedName);
+            this._saveSession.saveSessionAsync(normalizedName).then(success => {
+                const message = success
+                    ? `Session '${normalizedName}' saved`
+                    : `ERROR: failed to save session '${normalizedName}'`;
+                this._saveInFlight.delete(normalizedName);
+                if (this._dbus) {
+                    this._dbus.emit_signal(
+                        'SessionSaved',
+                        new GLib.Variant('(sbs)', [normalizedName, Boolean(success), message]));
+                }
+            }).catch(error => {
+                this._saveInFlight.delete(normalizedName);
+                if (this._dbus) {
+                    this._dbus.emit_signal(
+                        'SessionSaved',
+                        new GLib.Variant('(sbs)', [normalizedName, false, error.message]));
+                }
+                this._log.error(error, `Failed to save session '${normalizedName}' through D-Bus`);
+            });
+
+            return `Saving session '${normalizedName}'`;
+        }
+
         _restorePreviousSession(removeAfterRestore) {
             const enableRestorePreviousSession = this._settings.get_boolean('enable-restore-previous-session');
             if (!enableRestorePreviousSession) {
@@ -202,6 +286,11 @@ const AutostartService = GObject.registerClass(
         }
 
         _disable() {
+            if (this._saveSession) {
+                this._saveSession.destroy();
+                this._saveSession = null;
+            }
+            this._saveInFlight.clear();
             if (this._autostartDialog) {
                 this._autostartDialog.destroy();
                 this._autostartDialog = null;

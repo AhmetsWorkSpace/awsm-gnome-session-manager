@@ -35,6 +35,12 @@ export const Log = class {
         }
     }
 
+    trace(source, operation, details = '') {
+        if (this.isDebug() || this.isVerboseLogging()) {
+            log(`[AWSM-DEBUG] [${source}] [${operation}] -> ${details}`);
+        }
+    }
+
     warn(logContent) {
         log(`[WARNING][Another window session manager] ${logContent}`);
     }

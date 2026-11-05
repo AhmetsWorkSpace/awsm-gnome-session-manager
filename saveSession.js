@@ -28,7 +28,7 @@ import { shellVersion } from './constants.js';
  * Prefer Mutter's rectangle API and keep a geometry-only fallback for older
  * Shell versions.
  */
-function getMonitorForFrame(display, rect) {
+function getMonitorForFrame(display, rect, diagnostics = null) {
     if (!rect || !display) {
         return -1;
     }
@@ -37,10 +37,12 @@ function getMonitorForFrame(display, rect) {
         try {
             const index = display.get_monitor_index_for_rect(rect);
             if (Number.isInteger(index) && index >= 0) {
+                if (diagnostics) diagnostics.source = 'get_monitor_index_for_rect';
                 return index;
             }
         } catch (e) {
             // Fall through to the geometry calculation below.
+            if (diagnostics) diagnostics.error = e.message;
         }
     }
 
@@ -68,10 +70,12 @@ function getMonitorForFrame(display, rect) {
             const monitor = display.get_monitor_geometry(index);
             if (centreX >= monitor.x && centreX < monitor.x + monitor.width &&
                 centreY >= monitor.y && centreY < monitor.y + monitor.height) {
+                if (diagnostics) diagnostics.source = 'frame-center-fallback';
                 return index;
             }
         }
     }
+    if (diagnostics) diagnostics.source = 'overlap-fallback';
     return bestIndex;
 }
 
@@ -127,6 +131,9 @@ export const SaveSession = class {
             const sessionConfig = await this._buildSession(sessionName);
     
             sessionConfig.x_session_config_objects = sessionConfig.sort();
+            sessionConfig.x_session_config_objects.forEach((window, index) => {
+                window.session_window_index = index;
+            });
             
             if (backup) {
                 await this.backupExistingSessionIfNecessary(sessionName, baseDir);
@@ -134,9 +141,10 @@ export const SaveSession = class {
     
             await this._saveSessionConfigAsync(sessionConfig, baseDir);
     
-            // TODO saved Notification   
+            return true;
         } catch (error) {
             this._log.error(error);
+            return false;
         }
     }
 
@@ -211,7 +219,7 @@ export const SaveSession = class {
     
             this._log.debug(`Generating window session ${sessionName}`);
             
-            const _getProcessInfoPromise = this._getProcessInfo([app])
+            const _getProcessInfoPromise = SubprocessUtils.getProcessInfo([app]);
             
             const [canContinue, sessionConfigObject] = this._builtSessionDetails(
                 app, 
@@ -235,7 +243,7 @@ export const SaveSession = class {
     async _buildSession(sessionName) {
         const runningShellApps = this._defaultAppSystem.get_running();
         const _getProcessInfoPromise = SubprocessUtils.getProcessInfo(runningShellApps, (metaWindow) => {
-            return UiHelper.ignoreWindows(metaWindow);
+            return !this._isSnapshotWindow(metaWindow);
         })
 
         const sessionConfig = new SessionConfig.SessionConfig();
@@ -243,30 +251,65 @@ export const SaveSession = class {
         sessionConfig.session_create_time = new Date().toLocaleString();
         sessionConfig.active_workspace_index = global.workspace_manager.get_active_workspace_index();
         
+        const seenWindowIds = new Set();
+        const snapshotWindows = [];
         for (const runningShellApp of runningShellApps) {
-            let { metaWindows, ignoredWindowsMap } = this._doIgnoreWindows(runningShellApp);
+            let { metaWindows } = this._doIgnoreWindows(runningShellApp);
+            const appRecords = [];
 
             const processInfoMap = await _getProcessInfoPromise;
 
             for (const metaWindow of metaWindows) {
                 try {
+                    const windowId = MetaWindowUtils.getStableWindowId(metaWindow);
+                    if (seenWindowIds.has(windowId)) continue;
                     const [canContinue, sessionConfigObject] = this._builtSessionDetails(runningShellApp, metaWindow);
                     if (!canContinue) {
                         continue;
                     }
-                    sessionConfigObject.windows_count = runningShellApp.get_n_windows() - ignoredWindowsMap.get(runningShellApp).length;
-                    
                     const processInfoArray = processInfoMap.get(metaWindow.get_pid());
                     this._setFieldsFromProcess(processInfoArray, sessionConfigObject);
 
+                    seenWindowIds.add(windowId);
+                    snapshotWindows.push(metaWindow);
+                    appRecords.push(sessionConfigObject);
                     sessionConfig.x_session_config_objects.push(sessionConfigObject);    
                 } catch (e) {
                     this._log.error(e, `Failed to generate session ${sessionName}`);
                     global.notify_error(`Failed to generate session ${sessionName}`, e.message);
                 }
             }
+            for (const record of appRecords) record.windows_count = appRecords.length;
+        }
+        try {
+            const sorted = global.display.sort_windows_by_stacking(snapshotWindows);
+            const stackById = new Map(sorted.map((window, index) => [MetaWindowUtils.getStableWindowId(window), index]));
+            for (const record of sessionConfig.x_session_config_objects) {
+                if (stackById.has(record.window_id)) record.stack_index = stackById.get(record.window_id);
+            }
+        } catch (error) {
+            this._log.warn(`Window stacking order unavailable: ${error.message}`);
         }
         return sessionConfig;
+    }
+
+    _isSnapshotWindow(metaWindow) {
+        try {
+            if (!metaWindow || metaWindow.is_override_redirect() ||
+                metaWindow.get_window_type() !== Meta.WindowType.NORMAL) return false;
+            const wmClass = metaWindow.get_wm_class() || '';
+            if (wmClass === 'org.gnome.Shell.Extensions' || wmClass === 'org.gnome.Extensions') return false;
+            const rect = metaWindow.get_frame_rect();
+            if (!rect || rect.width <= 50 || rect.height <= 50) return false;
+            if (typeof metaWindow.get_buffer_rect === 'function') {
+                const buffer = metaWindow.get_buffer_rect();
+                if (!buffer || buffer.width <= 0 || buffer.height <= 0) return false;
+            }
+            return true;
+        } catch (error) {
+            this._log.debug(`Skipping unavailable window: ${error.message}`);
+            return false;
+        }
     }
 
     _doIgnoreWindows(runningShellApp) {
@@ -275,7 +318,7 @@ export const SaveSession = class {
 
         let metaWindows = runningShellApp.get_windows();
         metaWindows = metaWindows.filter(metaWindow => {
-            if (UiHelper.ignoreWindows(metaWindow)) {
+            if (!this._isSnapshotWindow(metaWindow)) {
                 ignoredWindowsMap.get(runningShellApp).push(metaWindow);
                 return false;
             }
@@ -293,6 +336,7 @@ export const SaveSession = class {
         const appName = runningShellApp.get_name();
 
         sessionConfigObject.window_id = MetaWindowUtils.getStableWindowId(metaWindow);
+        sessionConfigObject.is_focused = metaWindow.has_focus();
         if (metaWindow.is_always_on_all_workspaces()) {
             sessionConfigObject.desktop_number = -1;
         } else {
@@ -310,12 +354,25 @@ export const SaveSession = class {
             sessionConfigObject.desktop_number = workspace.index();
         }
         const frameRect = metaWindow.get_frame_rect();
-        let monitorNumber = getMonitorForFrame(global.display, frameRect);
+        const monitorDetection = {};
+        let monitorNumber = getMonitorForFrame(global.display, frameRect, monitorDetection);
         if (monitorNumber < 0 || monitorNumber === null || monitorNumber === undefined) {
             monitorNumber = metaWindow.get_monitor();
+            monitorDetection.source = 'metaWindow.get_monitor';
         }
         sessionConfigObject.monitor_number = monitorNumber;
         sessionConfigObject.is_on_primary_monitor = monitorNumber === global.display.get_primary_monitor();
+        if (Number.isInteger(monitorNumber) && monitorNumber >= 0 &&
+            monitorNumber < global.display.get_n_monitors()) {
+            const monitorGeometry = global.display.get_monitor_geometry(monitorNumber);
+            sessionConfigObject.monitor_geometry = {
+                provider: 'Meta',
+                x: monitorGeometry.x,
+                y: monitorGeometry.y,
+                width: monitorGeometry.width,
+                height: monitorGeometry.height,
+            };
+        }
         sessionConfigObject.pid = metaWindow.get_pid();
         // TODO Since we can launch an app in the terminal after `su - username` or `su username`, we 
         // should get the user ID who creates/launches this process. In the future, we can restore
@@ -323,7 +380,7 @@ export const SaveSession = class {
         sessionConfigObject.username = GLib.get_user_name();
 
         sessionConfigObject.client_machine_name = GLib.get_host_name();
-        sessionConfigObject.window_title = metaWindow.get_title();
+        sessionConfigObject.window_title = metaWindow.get_title()?.trim() || metaWindow.get_wm_class() || appName;
         sessionConfigObject.app_name = appName;
         sessionConfigObject.wm_class = metaWindow.get_wm_class();
         sessionConfigObject.wm_class_instance = metaWindow.get_wm_class_instance();
@@ -357,6 +414,7 @@ export const SaveSession = class {
         } else {
             window_state.meta_maximized = metaWindow.get_maximized();
         }
+        sessionConfigObject.maximized = Boolean(window_state.meta_maximized);
 
         const windowTileFor = metaWindow.get_tile_match() ?? metaWindow._tile_match_awsm;
         if (windowTileFor) {
@@ -434,6 +492,24 @@ export const SaveSession = class {
             }
 
         }
+
+        this._log.trace(
+            'saveSession.js',
+            'window-scan',
+            JSON.stringify({
+                title: metaWindow.get_title(),
+                pid: sessionConfigObject.pid,
+                wm_class: sessionConfigObject.wm_class,
+                desktop_file_id: sessionConfigObject.desktop_file_id,
+                frame_rect: {
+                    x: frameRect.x,
+                    y: frameRect.y,
+                    width: frameRect.width,
+                    height: frameRect.height,
+                },
+                monitor_number: monitorNumber,
+                monitor_detection: monitorDetection,
+            }));
 
         return [true, sessionConfigObject];
     }
@@ -552,17 +628,27 @@ export const SaveSession = class {
             sessionConfigObject.process_create_time = processInfoArray.slice(0, 5).join(' ');
             sessionConfigObject.cpu_percent = processInfoArray.slice(5, 6).join();
             sessionConfigObject.memory_percent = processInfoArray.slice(6, 7).join();
-            const command = processInfoArray.slice(8);
-            if (sessionConfigObject.wm_class?.toLowerCase().includes('firefox') &&
-                command[0]?.startsWith('/snap/')) {
-                command[0] = '/snap/bin/firefox';
-            }
-            sessionConfigObject.cmd = command;
         } else {
             sessionConfigObject.process_create_time = null;
             sessionConfigObject.cpu_percent = null;
             sessionConfigObject.memory_percent = null;
-            sessionConfigObject.cmd = null;
+        }
+        // A desktop launcher is preferred. Only use procfs as an argv fallback;
+        // ps output is display text and cannot preserve argument boundaries.
+        sessionConfigObject.cmd = null;
+        if (sessionConfigObject.desktop_file_id || !Number.isInteger(sessionConfigObject.pid) ||
+            sessionConfigObject.pid <= 0) return;
+        try {
+            const file = Gio.File.new_for_path(`/proc/${sessionConfigObject.pid}/cmdline`);
+            const [ok, bytes] = file.load_contents(null);
+            if (!ok || !bytes.length || bytes[bytes.length - 1] !== 0) return;
+            const argv = new TextDecoder('utf-8', {fatal: true}).decode(bytes).split('\0');
+            argv.pop();
+            if (!argv.length || !argv[0]) return;
+            sessionConfigObject.cmd = argv;
+            sessionConfigObject.cmd_argv_verified = true;
+        } catch (error) {
+            this._log.debug(`Cannot read process argv: ${error.message}`);
         }
     }
 

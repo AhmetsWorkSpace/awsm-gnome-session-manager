@@ -10,6 +10,69 @@
 .restore-session-dialog {
     width: 30em;
 }
+
+.awsm-info-dialog {
+    width: 42em;
+}
+
+.awsm-info-content {
+    spacing: 14px;
+}
+
+.awsm-info-header {
+    spacing: 14px;
+}
+
+.awsm-info-icon {
+    icon-size: 42px;
+}
+
+.awsm-info-title {
+    font-size: 1.35em;
+    font-weight: bold;
+}
+
+.awsm-info-subtitle {
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 0.95em;
+}
+
+.awsm-info-description,
+.awsm-info-footer {
+    color: rgba(255, 255, 255, 0.82);
+    line-height: 1.35;
+}
+
+.awsm-info-details {
+    spacing: 2px;
+    padding: 10px;
+    border-radius: 8px;
+    background-color: rgba(255, 255, 255, 0.06);
+}
+
+.awsm-info-row {
+    spacing: 12px;
+    padding: 5px 2px;
+}
+
+.awsm-info-label {
+    color: rgba(255, 255, 255, 0.62);
+}
+
+.awsm-info-value {
+    color: rgba(255, 255, 255, 0.95);
+    text-align: right;
+}
+
+.awsm-info-link {
+    color: #78b9ff;
+    padding: 2px 0;
+}
+
+.awsm-info-link:hover,
+.awsm-info-link:focus {
+    color: #b7d8ff;
+}
   
 
 /**
@@ -45,6 +108,19 @@
     max-height:600px;
 }
 
+/* Compact only the three top action rows, leaving session rows untouched. */
+.awsm-action-row {
+    padding-top: 2px;
+    padding-bottom: 2px;
+    spacing: 8px;
+}
+
+.awsm-action-row .button-item {
+    min-width: 24px;
+    min-height: 24px;
+    padding: 2px;
+}
+
 .confirm-before-operate {
     color: #F00; 
     font-weight: bold; 
@@ -59,6 +135,12 @@
 
 .button-item > StIcon {
     icon-size: 14px;
+}
+
+.button-item {
+    min-width: 28px;
+    min-height: 28px;
+    padding: 4px;
 }
 
 .aws-item-separator {

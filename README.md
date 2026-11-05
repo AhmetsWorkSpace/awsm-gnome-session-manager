@@ -1,4 +1,36 @@
 # gnome-shell-extension-another-window-session-manager
+
+## 📐 Mimari İlkeler ve Kod Kalitesi Standartları (Architecture & Code Hygiene)
+
+Bu proje, Wayland ve Mutter üzerinde çoklu monitör ve GPU ortamlarını desteklemeyi hedefleyen bir sistem uzantısıdır. Aşağıdaki kurallar geliştiriciler ve katkıcılar için zorunlu geliştirme standartlarıdır. **Bu standartların yazılmış olması, mevcut uygulamanın tamamının bunlara uyduğunu veya canlı ortamda doğrulandığını göstermez.** Mevcut uyumsuzluklar tespit edildiğinde kanıtları ve geriye dönük uyumluluk etkileriyle birlikte ele alınmalıdır.
+
+### 1. Sıfır Spagetti: Evrensel Sözleşme Kuralı (Universal Contract)
+
+- **Özel durum yamaları yasaktır:** `saveSession.js`, `restoreSession.js` veya `moveSession.js` içine uygulama adına bağlı geçici gövde içi yamalar serpiştirilmez.
+- **Soyutlama ve polimorfizm:** Uygulamalar davranışlarına göre genel kategorilerle yönetilir; örneğin durumsuz pencereler ve durumlu, çok sekmeli uygulamalar. Yeni bir uygulama eklenirken çekirdek döngüye özel koşullar eklemek yerine davranış kuralları veri modelinde tanımlanır.
+- **Kör zamanlayıcı kulesi yasaktır:** Pencere yakalamak için zincirlenmiş `setTimeout` veya `GLib.timeout_add` kullanılmaz. Yaşam döngüsü `window-created`, `notify::title` ve `first-frame` gibi Mutter olaylarıyla yönetilir. Sınırlı zaman aşımı ve temizlenebilir güvenlik yedekleri ayrıca tanımlanabilir.
+
+### 2. Sıfır Yetim Kod (Zero Orphan Code & Data Hygiene)
+
+- **Kullanılmayan alan serileştirilmez:** Yeni kaydedilen her oturum alanının Restore veya Move hattında tanımlı bir işlevi olmalıdır. İşlenmeyen eski alanlar kaldırılmadan önce mevcut kayıtlarla uyumluluk ve geçiş yöntemi incelenir.
+- **Ölü ve terk edilmiş kod bırakılmaz:** Kullanılmayan yardımcı metotlar, parametreler ve değişkenler veya yalnızca ileride gerekebilir diye korunan yorumlar eklenmez.
+- **Sinyal temizliği zorunludur:** Bağlanan pencere ve yaşam döngüsü sinyalleri, pencere kapandığında, işlem tamamlandığında, iptal edildiğinde veya zaman aşımında ayrılır; ilgili zamanlayıcı kaynakları temizlenir.
+
+### 3. Tek Otorite Kuralı (Single Source of Truth / Coordinator)
+
+- Aynı pencereyi aynı anda taşımaya çalışan bağımsız kontrolcüler bulunamaz.
+- Restore etkinken `indicator.js` ve diğer arka plan aktörleri koordinatörün yönettiği pencerelere özerk olarak müdahale etmez. Yaşam döngüsü, iptal ve kaynak temizliği tek bir koordinatör sözleşmesiyle yönetilir.
+
+### 4. Kilitlenmeyen Akış İlkesi (Non-blocking Pipelines)
+
+- Tek bir pencerenin gecikmesi, yüzey oluşturamaması veya zaman aşımı bütün geri yükleme kuyruğunu kilitlemez.
+- Başlık veya geometri doğrulanamazsa uyarı kaydedilir ve diğer kayıtların işlenmesi sürer. FIFO ancak tanımlanmış yedek politikası kapsamında kullanılır; doğru pencere eşleşmesini garanti etmez. Riskli veya belirsiz durumlar sessizce başarılı sayılmaz.
+
+### 5. Komut ve Veri Ayrıştırma Güvenliği (Input & Command Safety)
+
+- Süreç komutları, `ps` çıktısı boşluklara bölünerek argüman dizisine dönüştürülmez; bu işlem boşluklu yolları ve tırnaklı argümanları bozabilir.
+- **Öncelik:** Uygulama başlatmada önce `Shell.App` ve `Gio.DesktopAppInfo` üzerinden `.desktop` kimliği kullanılır. Ham komut zorunluysa argüman sınırları yalnızca `/proc/<pid>/cmdline` içindeki NUL ayrımlarıyla elde edilir; doğrulanamayan veya güvenli biçimde çalıştırılamayan komutlar reddedilir.
+
 Close open windows gracefully and save them as a session. And you can restore them when necessary manually or automatically at startup.
 
 Most importantly, it supports both X11 and Wayland!
@@ -10,7 +42,7 @@ Bu bölüm, mevcut proje belgelerini ve GNOME 50 / Mutter Wayland refactoring ku
 ### Kural ve şartname dosyaları
 
 - [AI_GUIDELINES.md](./AI_GUIDELINES.md): GNOME 50 Wayland mimarisi, Mutter API kısıtları, monitör tespiti, yüzey hazır olma yarışı, sinyal yaşam döngüsü ve pencere eşleştirme kuralları.
-- [DEVELOPER_TEST_RULES.md](./DEVELOPER_TEST_RULES.md): Yerel-öncelikli çalışma, atomik Save/Restore/Move test hattı, statik doğrulama ve canlı kabul sınırları.
+- [DEVELOPER_TEST_RULES.md](./DEVELOPER_TEST_RULES.md): Yerel-öncelikli çalışma, atomik Save/Restore/Move test hattı, statik doğrulama, canlı kabul sınırları ve Wayland çalışma ortamını koruyan yasaklı-komut protokolü.
 - [metadata.json](./metadata.json): Eklenti UUID'si, GNOME Shell sürüm uyumluluğu ve meta veriler.
 - [GSettings şeması](./schemas/org.gnome.shell.extensions.another-window-session-manager.gschema.xml): Kullanılabilecek ayar anahtarlarının tek yetkili kaynağı. Özellikle `windows-mapping`, `stash-and-restore-states`, `autorestore-sessions` ve `enable-autoclose-session` anahtarları buradan doğrulanmalıdır.
 - [SYSTEM_ENVIRONMENT.md](./SYSTEM_ENVIRONMENT.md): Yerel GNOME/GJS/Wayland kanıtları, GIR kaynak durumu, Mutter DisplayConfig erişim sonucu ve doğrulanmamış ortam alanları.
@@ -90,6 +122,88 @@ Kod değiştirmeden önce AI şu sırayı izlemelidir:
 3. Yalnızca tek mikro-problem için minimal diff uygulanır.
 4. Önce yerel statik doğrulama, sonra ilgili atomik canlı test yapılır.
 5. Statik veya sentetik sonuç, gerçek Wayland/çoklu monitör kabulü olarak raporlanmaz.
+
+### Gerçek Mutter durumu ile Save kaydı doğrulama
+
+`scripts/verify_session_state.js`, GNOME Shell'i yeniden başlatmadan Mutter DisplayConfig üzerinden o anki monitör yerleşimini okur ve bir Save JSON kaydıyla karşılaştırır. Monitör numarası, ölçeklenmiş mantıksal geometri, primary monitör, pencere sayısı, yinelenen pencere kimliği ve kayıtlı PID'lerin canlılığı kontrol edilir:
+
+```bash
+gjs -m scripts/verify_session_state.js \
+  "$HOME/.config/another-window-session-manager/sessions/FireFoxSetup"
+```
+
+Bu betik Wayland güvenlik sınırları nedeniyle harici pencere araçları kullanmaz. `PASS`, kayıtlı geometrinin mevcut Mutter monitör düzeniyle tutarlı olduğunu gösterir; tek başına pencerenin gerçekten kullanıcı tarafından taşındığını veya restore işleminin canlı kabulünü kanıtlamaz.
+
+### Save kaydındaki bilgilerin restore sırasında kullanımı
+
+Yeni bir Save işleminden sonra her pencere kaydında şu bilgiler birlikte kullanılır:
+
+- `window_position`: Mutter çerçeve koordinatları ve pencere genişlik/yüksekliği.
+- `monitor_number` ve `monitor_geometry`: hedef monitör. Restore önce kayıtlı mantıksal monitör geometrisini eşleştirir; monitör sırası değişmişse aynı boyuttaki monitöre yönelir, ardından indeks ve primary monitör fallback'i uygulanır. Koordinatlar hedef monitörün güncel geometrisine yeniden tabanlanır.
+- `desktop_number`: pencerenin çalışma alanı.
+- `window_state`: maximize, always-on-top (`is_above`) ve tüm çalışma alanlarında görünürlük (`is_sticky`). Restore, kayıtta `false` olan durumları da kaldırır.
+- `fullscreen` ve `minimized`: Wayland yüzeyi hazır olduktan ve gecikmeli geometri uygulandıktan sonra yeniden uygulanır.
+- `desktop_file_id`: uygulama başlatmada tercih edilen GNOME desktop uygulama kimliği; Snap uygulamalarında iç revision binary yolu yerine paket başlatıcısı kullanılır.
+
+`monitor_geometry`, Mutter'ın mantıksal çalışma alanı ölçüsüdür ve pencere konumunu yeniden kurmak için gereklidir. Fiziksel çözünürlük ve ölçek (`physical`, `scale`) doğrulama betiği tarafından o anki DisplayConfig durumundan okunur; bunlar uygulama başlatma parametresi değildir. Eski JSON kayıtlarında bu alan bulunmadığı için restore geriye dönük olarak mutlak koordinat ve kayıtlı monitör indeksini kullanır. Yeni geometriyi kaydetmek için ilgili oturumda bir kez daha **Save open windows** çalıştırılmalıdır.
+
+### Menüden Preferences ve derin Wayland logları
+
+Panel menüsündeki **Extension settings** maddesi `gnome-extensions prefs another-window-session-manager@gmail.com` komutuyla bu eklentinin ayarlarını açar. Hemen altındaki **GNOME Extensions** maddesi `gnome-extensions-app` ile sistemdeki tüm eklentilerin resmi uygulamasını açar. `debugging-mode` veya `verbose-logging` açıkken kritik kayıt/restore/taşıma olayları şu formatta yazılır:
+
+```text
+[AWSM-DEBUG] [saveSession.js|restoreSession.js|moveSession.js] [işlem] -> ayrıntı
+```
+
+Wayland yüzeyinin `buffer_rect` hazır olma denemeleri, `move_to_monitor()` öncesi/sonrası frame koordinatları, timeout fallback'i, FIFO kuyruğu, desktop ID/komut ve Save sırasında pencere/monitör tespiti bu kanallardan izlenebilir:
+
+```bash
+journalctl -f -o cat /usr/bin/gnome-shell | grep -E 'AWSM-DEBUG|Another window session manager'
+```
+
+Geliştirme sırasında mevcut AWSM ayar anahtarlarını tek seferde incelemek için:
+
+```bash
+gsettings --schemadir "$HOME/.local/share/gnome-shell/extensions/another-window-session-manager@gmail.com/schemas" \
+  list-recursively org.gnome.shell.extensions.another-window-session-manager
+```
+
+Bu loglar hata ayıklama içindir; komut satırı yolları, pencere başlıkları ve PID değerleri içerebilir. İş bitince iki ayarı kapatmak için `gsettings ... set ... false` kullanılmalıdır.
+
+### Wayland çalışma ortamı güvenliği
+
+Kod değişikliğinden sonra proje kökündeki `test_runner.sh` tek yerel doğrulama kapısıdır. Belirli bir JavaScript dosyasını veya tüm projeyi tarar:
+
+```bash
+./test_runner.sh saveSession.js
+./test_runner.sh
+```
+
+Betik; parse, şema, diff, güvenli eklenti yenilemesi, `ACTIVE` durumu, menü komutları, GSettings ve kısa hata günlüğü kontrollerini çalıştırır. `=== BUTUN TESTLER BASARILI ===` görülmeden değişiklik kabul edilmez. Tam GNOME Shell restartı ve compositor sinyalleri bu betiğin parçası değildir.
+
+### D-Bus üzerinden taze oturum kaydı
+
+Panelde fareyle kayıt başlatmak yerine, AWSM aynı oturumdaki D-Bus servisine `SaveSession` metodunu sunar. Bu metot mevcut pencereleri kaydeder; işlem tamamlandığında `SessionSaved` sinyali yayınlanır. Proje kökünden:
+
+```bash
+gdbus call --session \
+  --dest org.gnome.Shell.Extensions.awsm \
+  --object-path /org/gnome/Shell/Extensions/awsm \
+  --method org.gnome.Shell.Extensions.awsm.Autostart.SaveSession \
+  FireFoxSetup
+```
+
+Kayıt ve `monitor_number`, `monitor_geometry`, `fullscreen`, `minimized` alanlarının birlikte doğrulanması için:
+
+```bash
+./test_runner.sh --save-session FireFoxSetup
+```
+
+Bu özel mod, kayıt çağrısından önce eklentiyi `disable/enable` ile yenilemez; çünkü GNOME Shell içindeki GJS modül önbelleği, yeni eklenen D-Bus handler'ını aynı süreçte yüklemeyebilir. Handler henüz canlı Shell sürecine alınmamışsa betik `FAIL` verir; bu sonuç kayıt başarılıymış gibi yorumlanmaz. Yeni handler'ın ilk kez yüklenmesi için bir sonraki GNOME oturumu başlatıldığında komut tekrar çalıştırılmalıdır.
+
+GNOME Shell compositor'ını yeniden başlatan veya sinyal gönderen komutlar bu projede test yöntemi değildir. `kill -3 gnome-shell`, `kill -HUP gnome-shell`, `killall -9 gnome-shell`, `gnome-shell --replace`, GDM restartı ve izinsiz uygulama katliamları çalıştırılmaz. Eklenti yenilemesi için sözdizimi kontrolünden sonra yalnızca [DEVELOPER_TEST_RULES.md](./DEVELOPER_TEST_RULES.md) Madde 5-B'deki `gnome-extensions disable/enable` yöntemi kullanılabilir.
+
+Bu kural, mevcut masaüstü oturumunu, açık VS Code/terminal pencerelerini ve kaydedilmemiş kullanıcı durumunu korumak içindir. Eklenti yenilemesi başarısız olursa Shell yeniden başlatılmaz; hata kanıtı toplanır ve durum kullanıcıya açıkça bildirilir.
 
 ### Orijinal yazar notlarını yerel CPU ile tarama
 
@@ -183,7 +297,7 @@ After confirm to save:
 1. Restore window state, including `Always on Top`, `Always on Visible Workspace` and maximization
 1. Restore window workspace, size and position
 1. Restore 2 column window tiling
-1. Stash all supported window states so that those states will be restored after gnome shell restarts via `Alt+F2 -> r` or `killall -3 gnome-shell`.
+1. Stash all supported window states so that those states can be restored after a GNOME Shell session restart. GNOME Wayland testlerinde compositor'ı elle yeniden başlatmak yerine [DEVELOPER_TEST_RULES.md](./DEVELOPER_TEST_RULES.md) içindeki eklenti-sınırlı yenileme yöntemi kullanılmalıdır.
 1. Move windows to their own workspace according to a saved session
 1. Support multi-monitor
 1. Remove saved session to trash
@@ -375,7 +489,7 @@ Note that I've marked `backups` as a reserved word, so you can't use it as a ses
       - [x] Move button
       - [x] Delete button
 1. - [x] Move windows according to a saved session.
-1. - [ ] Settings
+1. - [x] Settings
       - [x] Debugging mode
       - [ ] whitelist using for closing application with multiple windows
 1. - [x] Support restoring a saved session at startup ([issue 9](https://github.com/nlpsuge/gnome-shell-extension-another-window-session-manager/issues/9))
@@ -384,6 +498,6 @@ Note that I've marked `backups` as a reserved word, so you can't use it as a ses
 1. - [ ] Translation?
 1. - [ ] A client tool called `awsm-client` (See: [issue 34](https://github.com/nlpsuge/gnome-shell-extension-another-window-session-manager/issues/34))
 1. - [ ] Fix any typo or grammar errors.
-1. - [ ] Open the Preferences on the popup menu 
+1. - [x] Open the Preferences and GNOME Extensions app from the popup menu
 1. - [x] Open the session file from the popup menu
 

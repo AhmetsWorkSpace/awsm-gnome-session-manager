@@ -23,12 +23,12 @@ export async function getProcessInfo(apps /*ShellApp*/, ignoreWindowsCb) {
             }
         }
 
-        if (!pidSet.size) return;
+        if (!pidSet.size) return new Map();
     
         // Separated with comma
         const pids = Array.from(pidSet).join(',');
         // TODO get_sandboxed_app_id() Gets an unique id for a sandboxed app (currently flatpaks and snaps are supported).
-        const psCmd = ['ps', '--no-headers', '-p', `${pids}`, '-o', 'lstart,%cpu,%mem,pid,command'];
+        const psCmd = ['ps', '--no-headers', '-p', `${pids}`, '-o', 'lstart,%cpu,%mem,pid'];
     
         return new Promise((resolve, reject) => {
             try {

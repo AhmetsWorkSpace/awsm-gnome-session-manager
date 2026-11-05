@@ -3,6 +3,8 @@
 import GObject from 'gi://GObject';
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
+import GLib from 'gi://GLib';
+import Gio from 'gi://Gio';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
@@ -10,6 +12,7 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import * as SaveSession from '../saveSession.js';
 import * as CloseSession from '../closeSession.js';
 import * as RestoreSession from '../restoreSession.js';
+import * as InfoDialog from './infoDialog.js';
 
 import * as FileUtils from '../utils/fileUtils.js';
 import * as Log from '../utils/log.js';
@@ -29,9 +32,11 @@ class PopupMenuButtonItems extends GObject.Object {
     addButtonItems() {
         const popupMenuButtonItemClose = new PopupMenuButtonItemClose('close-symbolic.svg');
         const popupMenuButtonItemSave = new PopupMenuButtonItemSave('save-symbolic.svg');
+        const popupMenuButtonItemInfo = new PopupMenuButtonItemInfo('info-symbolic.svg');
         
         this.buttonItems.push(popupMenuButtonItemClose);
         this.buttonItems.push(popupMenuButtonItemSave);
+        this.buttonItems.push(popupMenuButtonItemInfo);
     }
 
 });
@@ -42,6 +47,7 @@ class PopupMenuButtonItem extends PopupMenu.PopupMenuItem {
 
     _init() {
         super._init('');
+        this.add_style_class_name('awsm-action-row');
 
         this.yesButton = null;
         this.noButton = null;
@@ -94,6 +100,97 @@ class PopupMenuButtonItem extends PopupMenu.PopupMenuItem {
         this.actor.add_child(this.iconDescriptionLabel);
     }
 
+});
+
+
+const PopupMenuButtonItemInfo = GObject.registerClass(
+class PopupMenuButtonItemInfo extends PopupMenuButtonItem {
+
+    _init(iconSymbolic) {
+        super._init();
+        this._infoDialog = null;
+        this._openInfoDialogId = 0;
+
+        this._createButton(iconSymbolic);
+        this.addIconDescription('Project information');
+        this._createExternalActionButtons();
+        this.connect('activate', this._onActivate.bind(this));
+    }
+
+    _createButton(iconSymbolic) {
+        const infoButton = super.createButton(iconSymbolic);
+        this.actor.add_child(infoButton);
+        infoButton.connect('clicked', this._onClicked.bind(this));
+    }
+
+    _createExternalActionButtons() {
+        // Keep both external actions on the same Project information row.
+        // Add them directly to PopupMenuItem, like the working session-row actions.
+        const preferencesButton = super.createButton('preferences-system-symbolic.svg');
+        preferencesButton.set_size(28, 28);
+        preferencesButton.accessible_name = 'Extension settings';
+        this.actor.add_child(preferencesButton);
+        preferencesButton.connect('clicked', () => {
+            this._openExternalCommand([
+                'gnome-extensions',
+                'prefs',
+                'another-window-session-manager@gmail.com',
+            ], 'Failed to open extension preferences');
+        });
+
+        const extensionsButton = super.createButton('applications-system-symbolic.svg');
+        extensionsButton.set_size(28, 28);
+        extensionsButton.accessible_name = 'GNOME Extensions';
+        this.actor.add_child(extensionsButton);
+        extensionsButton.connect('clicked', () => {
+            this._openExternalCommand(
+                ['gnome-extensions-app'],
+                'Failed to open GNOME Extensions');
+        });
+    }
+
+    _openExternalCommand(command, errorMessage) {
+        if (this._parent) {
+            this._parent.close();
+        }
+
+        try {
+            Gio.Subprocess.new(command, Gio.SubprocessFlags.NONE);
+        } catch (e) {
+            Log.Log.getDefault().error(e, errorMessage);
+        }
+    }
+
+    _onActivate() {
+        this._onClicked();
+    }
+
+    _onClicked() {
+        if (this._parent) {
+            this._parent.close();
+        }
+
+        this._infoDialog = new InfoDialog.AwsInfoDialog();
+        this._openInfoDialogId = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+            this._openInfoDialogId = 0;
+            if (this._infoDialog) {
+                this._infoDialog.open();
+            }
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    destroy() {
+        if (this._openInfoDialogId) {
+            GLib.Source.remove(this._openInfoDialogId);
+            this._openInfoDialogId = 0;
+        }
+        if (this._infoDialog) {
+            this._infoDialog.close();
+            this._infoDialog = null;
+        }
+        super.destroy();
+    }
 });
 
 

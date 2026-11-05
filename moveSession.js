@@ -49,6 +49,75 @@ function getMonitorForFrame(metaWindow) {
     return bestIndex >= 0 ? bestIndex : metaWindow.get_monitor();
 }
 
+function getFrameRectForLog(metaWindow) {
+    try {
+        const rect = metaWindow.get_frame_rect();
+        return {x: rect.x, y: rect.y, width: rect.width, height: rect.height};
+    } catch (e) {
+        return null;
+    }
+}
+
+function getTitleForLog(metaWindow) {
+    try {
+        return metaWindow.get_title();
+    } catch (e) {
+        return '<disposed-window>';
+    }
+}
+
+function getRestoreMonitorIndex(savedWindowSession) {
+    const display = global.display;
+    const savedGeometry = savedWindowSession?.monitor_geometry;
+    const monitorCount = display.get_n_monitors();
+
+    // Monitor enumeration can change after a dock or an external display is
+    // reconnected. Prefer the saved Mutter geometry when it identifies the
+    // same logical monitor, and only then fall back to the saved index.
+    if (savedGeometry?.provider === 'Meta') {
+        const exactIndex = Array.from({length: monitorCount}, (_, index) => index)
+            .find(index => {
+                const current = display.get_monitor_geometry(index);
+                return current.x === Number(savedGeometry.x) &&
+                    current.y === Number(savedGeometry.y) &&
+                    current.width === Number(savedGeometry.width) &&
+                    current.height === Number(savedGeometry.height);
+            });
+        if (exactIndex !== undefined) {
+            return exactIndex;
+        }
+
+        // If the whole layout moved, position is no longer exact but a
+        // monitor with the same logical size is still a useful identity hint.
+        const sameSize = Array.from({length: monitorCount}, (_, index) => index)
+            .filter(index => {
+                const current = display.get_monitor_geometry(index);
+                return current.width === Number(savedGeometry.width) &&
+                    current.height === Number(savedGeometry.height);
+            })
+            .sort((left, right) => {
+                const leftGeometry = display.get_monitor_geometry(left);
+                const rightGeometry = display.get_monitor_geometry(right);
+                const leftDistance = Math.abs(leftGeometry.x - Number(savedGeometry.x)) +
+                    Math.abs(leftGeometry.y - Number(savedGeometry.y));
+                const rightDistance = Math.abs(rightGeometry.x - Number(savedGeometry.x)) +
+                    Math.abs(rightGeometry.y - Number(savedGeometry.y));
+                return leftDistance - rightDistance;
+            });
+        if (sameSize.length) {
+            return sameSize[0];
+        }
+    }
+
+    const savedMonitorIndex = savedWindowSession?.monitor_number;
+    if (Number.isInteger(savedMonitorIndex) &&
+        savedMonitorIndex >= 0 && savedMonitorIndex < monitorCount) {
+        return savedMonitorIndex;
+    }
+
+    return -1;
+}
+
 
 export const MoveSession = class {
 
@@ -140,28 +209,13 @@ export const MoveSession = class {
         }
 
         const shellApp = this._windowTracker.get_window_app(metaWindow);
-        const primaryMonitorIndex = global.display.get_primary_monitor()
-        const savedMonitorIndex = saved_window_session.monitor_number;
+        const primaryMonitorIndex = global.display.get_primary_monitor();
+        const savedMonitorIndex = getRestoreMonitorIndex(saved_window_session);
 
         let toMonitorIndex = null;
-        if (savedMonitorIndex === undefined) {
+        if (savedMonitorIndex < 0) {
             if (currentMonitorIndex !== primaryMonitorIndex) {
                 this._log.info(`${shellApp.get_name()} - ${metaWindow.get_title()} doesn't have the monitor number data, click the save open windows button to save it. Moving it to the primary monitor ${primaryMonitorIndex} from ${currentMonitorIndex}`);
-                toMonitorIndex = primaryMonitorIndex;
-            }
-        }
-        // It is possible to save unmanaged windows or old/invalid JSON.
-        else if (!Number.isInteger(savedMonitorIndex) || savedMonitorIndex < 0) {
-            if (currentMonitorIndex !== primaryMonitorIndex) {
-                this._log.info(`${shellApp.get_name()} - ${metaWindow.get_title()} is unmanaged when saving, moving it to the primary monitor ${primaryMonitorIndex} from ${currentMonitorIndex}`);
-                toMonitorIndex = primaryMonitorIndex;
-            }
-        }
-        // It causes Gnome shell to crash, if we move a monitor to a non-existing monitor on X11 and Wayland!
-        // We move all windows on non-existing monitors to the primary monitor
-        else if (savedMonitorIndex > global.display.get_n_monitors() - 1) {
-            if (currentMonitorIndex !== primaryMonitorIndex) {
-                this._log.info(`Monitor ${savedMonitorIndex} doesn't exist. Moving ${shellApp.get_name()} - ${metaWindow.get_title()} to the primary monitor ${primaryMonitorIndex} from ${currentMonitorIndex}`);
                 toMonitorIndex = primaryMonitorIndex;
             }
         }
@@ -197,6 +251,20 @@ export const MoveSession = class {
                     if (applyPosition) {
                         this._moveFrameToSavedPosition(metaWindow, saved_window_session);
                     }
+                    let actualMonitor = null;
+                    try {
+                        actualMonitor = getMonitorForFrame(metaWindow);
+                    } catch (e) {}
+                    this._log.trace(
+                        'moveSession.js',
+                        'move-to-monitor-after',
+                        JSON.stringify({
+                            title: getTitleForLog(metaWindow),
+                            requested_monitor: toMonitorIndex,
+                            actual_monitor: actualMonitor,
+                            position_applied: applyPosition,
+                            frame_rect: getFrameRectForLog(metaWindow),
+                        }));
                     resolve(metaWindow);
                 };
                 cancel = () => finish(false);
@@ -211,7 +279,24 @@ export const MoveSession = class {
                         }
                     });
                 try {
+                    this._log.trace(
+                        'moveSession.js',
+                        'move-to-monitor-before',
+                        JSON.stringify({
+                            title: getTitleForLog(metaWindow),
+                            from_monitor: currentMonitorIndex,
+                            requested_monitor: toMonitorIndex,
+                            frame_rect: getFrameRectForLog(metaWindow),
+                        }));
                     metaWindow.move_to_monitor(toMonitorIndex);
+                    this._log.trace(
+                        'moveSession.js',
+                        'move-to-monitor-return',
+                        JSON.stringify({
+                            title: getTitleForLog(metaWindow),
+                            requested_monitor: toMonitorIndex,
+                            frame_rect: getFrameRectForLog(metaWindow),
+                        }));
                 } catch (e) {
                     this._log.error(e, `Failed to move ${metaWindow.get_title()} to monitor ${toMonitorIndex}`);
                     finish();
@@ -219,6 +304,14 @@ export const MoveSession = class {
                 }
                 timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 250, () => {
                     if (!resolved) {
+                        this._log.trace(
+                            'moveSession.js',
+                            'move-to-monitor-timeout',
+                            JSON.stringify({
+                                title: getTitleForLog(metaWindow),
+                                requested_monitor: toMonitorIndex,
+                                fallback: 'finish-after-timeout',
+                            }));
                         finish();
                     }
                     return GLib.SOURCE_REMOVE;
@@ -235,6 +328,7 @@ export const MoveSession = class {
     }
 
     async _moveWindowByMetaWindow(metaWindow, saved_window_sessions, preferTitle) {
+        let ownsWindowLock = false;
         try {
             if (UiHelper.ignoreWindows(metaWindow)) return;
 
@@ -249,6 +343,7 @@ export const MoveSession = class {
             }
 
             this._movingWindows.add(metaWindow);
+            ownsWindowLock = true;
 
             if (!await this._waitForWindowReady(metaWindow)) {
                 this._log.warn(`Window surface was not ready for ${metaWindow.get_title()}`);
@@ -282,16 +377,41 @@ export const MoveSession = class {
                 }
                 // The window state get lost during moving the window, and we need to restore window state again.
                 this._restoreWindowState(metaWindow, matchedSavedWindowSession);
+                this._restorePresentationState(metaWindow, matchedSavedWindowSession);
 
                 matchedSavedWindowSession.moved = true;
             }
+            this._scheduleSettledGeometry(metaWindow);
             return true;
         } catch (error) {
             this._log.error(error, metaWindow ? metaWindow.get_title() : 'This window may be destroyed.');
             return false;
         } finally {
-            this._movingWindows.delete(metaWindow);
+            if (ownsWindowLock) this._movingWindows.delete(metaWindow);
         }
+    }
+
+    _scheduleSettledGeometry(metaWindow) {
+        const sourceId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 750, () => {
+            this._sourceIds = this._sourceIds?.filter(id => id !== sourceId) ?? [];
+            if (this._isDestroyed || !this._log) return GLib.SOURCE_REMOVE;
+            try {
+                const rect = metaWindow.get_frame_rect();
+                this._log.trace('moveSession.js', 'geometry-settled', JSON.stringify({
+                    window_id: metaWindow.get_id(), title: metaWindow.get_title(),
+                    monitor: getMonitorForFrame(metaWindow),
+                    rect: {x: rect.x, y: rect.y, width: rect.width, height: rect.height},
+                    is_maximized: typeof metaWindow.is_maximized === 'function'
+                        ? metaWindow.is_maximized() : Boolean(metaWindow.get_maximized()),
+                    fullscreen: metaWindow.is_fullscreen(), minimized: metaWindow.minimized,
+                    observation_delay_ms: 750,
+                }));
+            } catch (error) {
+                this._log.debug(`Settled geometry unavailable: ${error.message}`);
+            }
+            return GLib.SOURCE_REMOVE;
+        });
+        this._sourceIds.push(sourceId);
     }
 
     _changeWorkspace(metaWindow, desktop_number) {
@@ -307,6 +427,8 @@ export const MoveSession = class {
         const windowWmClass = metaWindow.get_wm_class();
         saved_window_sessions = saved_window_sessions.filter(saved_window_session => {
             return !saved_window_session.moved &&
+                (!saved_window_session._awsmRestoreInFlight ||
+                    saved_window_session._awsmRestoreInFlight === metaWindow) &&
                 (!saved_window_session.wm_class || saved_window_session.wm_class === windowWmClass);
         });
 
@@ -334,18 +456,30 @@ export const MoveSession = class {
         return saved_window_session;
     }
 
-    _isWindowReady(metaWindow) {
+    _getWindowReadiness(metaWindow) {
         try {
-            if (metaWindow._aboutToClose || metaWindow.is_override_redirect()) {
-                return false;
-            }
+            const overrideRedirect = metaWindow.is_override_redirect();
             const bufferRect = typeof metaWindow.get_buffer_rect === 'function'
                 ? metaWindow.get_buffer_rect()
                 : metaWindow.get_frame_rect();
-            return bufferRect.width > 0 && bufferRect.height > 0;
+            return {
+                ready: !metaWindow._aboutToClose && !overrideRedirect &&
+                    bufferRect.width > 0 && bufferRect.height > 0,
+                override_redirect: overrideRedirect,
+                buffer_rect: {
+                    x: bufferRect.x,
+                    y: bufferRect.y,
+                    width: bufferRect.width,
+                    height: bufferRect.height,
+                },
+            };
         } catch (e) {
-            return false;
+            return {ready: false, buffer_rect: null, error: e.message};
         }
+    }
+
+    _isWindowReady(metaWindow) {
+        return this._getWindowReadiness(metaWindow).ready;
     }
 
     _waitForWindowReady(metaWindow, maxAttempts = 6) {
@@ -353,7 +487,16 @@ export const MoveSession = class {
             return Promise.resolve(false);
         }
 
-        if (this._isWindowReady(metaWindow)) {
+        const initialReadiness = this._getWindowReadiness(metaWindow);
+        this._log.trace(
+            'moveSession.js',
+            'surface-check',
+            JSON.stringify({
+                title: getTitleForLog(metaWindow),
+                attempt: 0,
+                ...initialReadiness,
+            }));
+        if (initialReadiness.ready) {
             return Promise.resolve(true);
         }
 
@@ -375,10 +518,23 @@ export const MoveSession = class {
                     return finish(false);
                 }
                 attempts++;
-                if (this._isWindowReady(metaWindow)) {
+                const readiness = this._getWindowReadiness(metaWindow);
+                this._log.trace(
+                    'moveSession.js',
+                    'surface-check',
+                    JSON.stringify({
+                        title: getTitleForLog(metaWindow),
+                        attempt: attempts,
+                        ...readiness,
+                    }));
+                if (readiness.ready) {
                     return finish(true);
                 }
                 if (attempts >= maxAttempts) {
+                    this._log.trace(
+                        'moveSession.js',
+                        'surface-timeout',
+                        JSON.stringify({title: getTitleForLog(metaWindow), attempts, ...readiness}));
                     return finish(false);
                 }
                 return GLib.SOURCE_CONTINUE;
@@ -399,10 +555,24 @@ export const MoveSession = class {
         try {
             if (UiHelper.ignoreWindows(metaWindow)) return;
 
+            this._log.trace(
+                'moveSession.js',
+                'window-state-restore',
+                JSON.stringify({
+                    title: getTitleForLog(metaWindow),
+                    monitor: saved_window_session.monitor_number,
+                    workspace: saved_window_session.desktop_number,
+                    frame_rect: saved_window_session.window_position,
+                    fullscreen: saved_window_session.fullscreen,
+                    minimized: saved_window_session.minimized,
+                    window_state: saved_window_session.window_state,
+                }));
+
             await this._restoreMonitor(metaWindow, saved_window_session);
             this._restoreWindowState(metaWindow, saved_window_session);
             this._restoreWindowGeometry(metaWindow, saved_window_session);
             this._restoreTiling(metaWindow, saved_window_session);
+            this._restorePresentationState(metaWindow, saved_window_session);
             if (markToMoved) {
                 saved_window_session.moved = true;
             }
@@ -419,12 +589,18 @@ export const MoveSession = class {
                 this._log.debug(`Making ${metaWindow.get_title()} above`);
                 metaWindow.make_above();
             }
+        } else if (metaWindow.is_above()) {
+            this._log.debug(`Removing above state from ${metaWindow.get_title()}`);
+            metaWindow.unmake_above();
         }
         if (window_state.is_sticky) {
             if (!metaWindow.is_on_all_workspaces()) {
                 this._log.debug(`Making ${metaWindow.get_title()} sticky`);
                 metaWindow.stick();
             }
+        } else if (metaWindow.is_on_all_workspaces()) {
+            this._log.debug(`Removing sticky state from ${metaWindow.get_title()}`);
+            metaWindow.unstick();
         }
 
         const savedMetaMaximized = window_state.meta_maximized;
@@ -448,6 +624,30 @@ export const MoveSession = class {
             }
         }
 
+    }
+
+    _restorePresentationState(metaWindow, saved_window_session) {
+        const savedFullscreen = saved_window_session.fullscreen;
+        if (typeof savedFullscreen === 'boolean') {
+            if (savedFullscreen && !metaWindow.is_fullscreen()) {
+                this._log.debug(`Making ${metaWindow.get_title()} fullscreen`);
+                metaWindow.make_fullscreen();
+            } else if (!savedFullscreen && metaWindow.is_fullscreen()) {
+                this._log.debug(`Leaving ${metaWindow.get_title()} fullscreen`);
+                metaWindow.unmake_fullscreen();
+            }
+        }
+
+        const savedMinimized = saved_window_session.minimized;
+        if (typeof savedMinimized === 'boolean') {
+            if (savedMinimized && !metaWindow.minimized) {
+                this._log.debug(`Minimizing ${metaWindow.get_title()}`);
+                metaWindow.minimize();
+            } else if (!savedMinimized && metaWindow.minimized) {
+                this._log.debug(`Unminimizing ${metaWindow.get_title()}`);
+                metaWindow.unminimize();
+            }
+        }
     }
 
     /**
@@ -485,6 +685,8 @@ export const MoveSession = class {
             // TODO Note that this is not a perfect solution to address the above issue.
             this._delayRestoreGeometryId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
                 this._moveResizeFrame(metaWindow, saved_window_session);
+                this._restorePresentationState(metaWindow, saved_window_session);
+                this._delayRestoreGeometryId = 0;
                 return GLib.SOURCE_REMOVE;
             });
         } else {
@@ -495,8 +697,8 @@ export const MoveSession = class {
     _moveResizeFrame(metaWindow, saved_window_session) {
         const window_position = saved_window_session.window_position;
         if (window_position?.provider === 'Meta') {
-            const to_x = window_position.x_offset;
-            const to_y = window_position.y_offset;
+            let to_x = window_position.x_offset;
+            let to_y = window_position.y_offset;
             const to_width = window_position.width;
             const to_height = window_position.height;
 
@@ -504,15 +706,43 @@ export const MoveSession = class {
             // frame later on Wayland. Use the saved monitor for clamping so a
             // delayed monitor signal cannot clamp the geometry to the old
             // display.
-            const savedMonitor = saved_window_session.monitor_number;
-            const currentMonitor = Number.isInteger(savedMonitor) &&
-                savedMonitor >= 0 && savedMonitor < global.display.get_n_monitors()
+            const savedMonitor = getRestoreMonitorIndex(saved_window_session);
+            const currentMonitor = savedMonitor >= 0
                 ? savedMonitor
                 : metaWindow.get_monitor();
             if (currentMonitor < 0) {
                 return;
             }
             const rectWorkArea = metaWindow.get_work_area_for_monitor(currentMonitor);
+
+            // New sessions keep Mutter's logical monitor geometry. Rebase the
+            // saved global position when the monitor layout changed; old sessions
+            // without this field retain their original absolute coordinates.
+            const savedMonitorGeometry = saved_window_session.monitor_geometry;
+            if (savedMonitorGeometry?.provider === 'Meta') {
+                const currentMonitorGeometry = global.display.get_monitor_geometry(currentMonitor);
+                to_x = currentMonitorGeometry.x + (window_position.x_offset - savedMonitorGeometry.x);
+                to_y = currentMonitorGeometry.y + (window_position.y_offset - savedMonitorGeometry.y);
+            }
+
+            this._log.trace(
+                'moveSession.js',
+                'geometry-apply-before',
+                JSON.stringify({
+                    title: getTitleForLog(metaWindow),
+                    monitor: currentMonitor,
+                    x: to_x,
+                    y: Math.max(to_y, rectWorkArea.y),
+                    width: to_width,
+                    height: to_height,
+                    work_area: {
+                        x: rectWorkArea.x,
+                        y: rectWorkArea.y,
+                        width: rectWorkArea.width,
+                        height: rectWorkArea.height,
+                    },
+                    current_frame_rect: getFrameRectForLog(metaWindow),
+                }));
             
             // For more info about the below issue see also: https://github.com/Leleat/Tiling-Assistant/blob/1e4176a9a7037ee5dd0612e4c9f9dbe45d4e67cf/tiling-assistant%40leleat-on-github/src/extension/tilingWindowManager.js#L186-L199
             
@@ -536,6 +766,14 @@ export const MoveSession = class {
                 Math.max(to_y, rectWorkArea.y),
                 to_width,
                 to_height);
+            this._log.trace(
+                'moveSession.js',
+                'geometry-apply-after',
+                JSON.stringify({
+                    title: getTitleForLog(metaWindow),
+                    monitor: currentMonitor,
+                    frame_rect: getFrameRectForLog(metaWindow),
+                }));
         }
     }
 
@@ -546,7 +784,16 @@ export const MoveSession = class {
         }
 
         try {
-            metaWindow.move_frame(true, windowPosition.x_offset, windowPosition.y_offset);
+            let x = windowPosition.x_offset;
+            let y = windowPosition.y_offset;
+            const savedGeometry = saved_window_session.monitor_geometry;
+            const targetMonitor = getRestoreMonitorIndex(saved_window_session);
+            if (savedGeometry?.provider === 'Meta' && targetMonitor >= 0) {
+                const currentGeometry = global.display.get_monitor_geometry(targetMonitor);
+                x = currentGeometry.x + (windowPosition.x_offset - Number(savedGeometry.x));
+                y = currentGeometry.y + (windowPosition.y_offset - Number(savedGeometry.y));
+            }
+            metaWindow.move_frame(true, x, y);
         } catch (e) {
             this._log.debug(`Could not apply early Wayland position for ${metaWindow.get_title()}: ${e.message}`);
         }

@@ -11,5 +11,14 @@
             <arg type="a{sv}" name="args" direction= "in"/>
             <arg type="s" name="message" direction="out"/>
         </method>
+        <method name="SaveSession">
+            <arg type="s" name="session_name" direction="in"/>
+            <arg type="s" name="message" direction="out"/>
+        </method>
+        <signal name="SessionSaved">
+            <arg type="s" name="session_name"/>
+            <arg type="b" name="success"/>
+            <arg type="s" name="message"/>
+        </signal>
     </interface>
 </node>

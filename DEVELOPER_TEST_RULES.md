@@ -119,7 +119,73 @@ Bu aşama tamamlanmadan görevin canlı olarak tamamlandığı söylenmez.
 - `shellApp.get_windows()` içindeki açık pencereler kayıt kuyruğuyla eşleştirilmeli.
 - Başlık eşleşmesi varsa yalnızca tercih olarak kullanılmalı; geçici Wayland başlığı nedeniyle FIFO fallback korunmalı.
 
-## 5. Çıktı ve kabul formatı
+## 5. Wayland çalışma ortamı güvenlik protokolü
+
+GNOME Wayland oturumunda GNOME Shell, Mutter ile birlikte masaüstü compositor'ının çalışma sürecidir. Bu nedenle çalışma ortamını yenilemek için GNOME Shell sürecine sinyal göndermek, eklenti testinin kapsamı dışındadır ve açık kullanıcı izni olmadan kesinlikle yapılmaz.
+
+### A. Yasaklı komutlar
+
+Aşağıdaki komutlar çalıştırılmaz, önerilmez ve test betiklerine eklenmez:
+
+- `kill -3`, `kill -HUP`, `killall -9 gnome-shell` veya GNOME Shell'e gönderilen diğer sinyaller.
+- `gnome-shell --replace`.
+- `systemctl restart gdm` veya `systemctl --user restart` ile GNOME Shell/oturum servislerini yeniden başlatma girişimleri.
+- Kullanıcının açık uygulamalarını ve kaydedilmemiş verilerini etkileyebilecek izinsiz `killall -9 firefox`, `pkill` veya benzeri süreç katliamları.
+
+Bu yasak, komutun bazı sistemlerde otomatik toparlanabilmesi ihtimalini değiştirmez: compositor yeniden başlatması açık pencereleri, paneli, test oturumunu ve kaydedilmemiş durumu bozabilir. Böyle bir durumda masaüstü yeniden başlatılmaz; çalışma durumu kullanıcıya bildirilir ve yalnızca güvenli, eklenti-sınırlı adımlar sürdürülür.
+
+### B. İzin verilen eklenti yenilemesi
+
+Kod değişikliklerini canlı eklentiye tanıtmak için, önce sözdizimi kapısı geçildikten sonra yalnızca şu eklenti-sınırlı yöntem kullanılabilir:
+
+```bash
+gnome-extensions disable another-window-session-manager@gmail.com && \
+gnome-extensions enable another-window-session-manager@gmail.com
+```
+
+Bu işlem de yalnızca kullanıcı görevi kapsamında canlı yenileme istediğinde yapılır. Yenileme beklenen sonucu vermezse GNOME Shell yeniden başlatılmaz; durum `bilinmiyor` veya `engelli` olarak raporlanır ve kullanıcıdan yönlendirme istenir.
+
+### C. Zorunlu ön kontrol
+
+Eklenti yenilenmeden önce yalnızca değişen JavaScript dosyaları yerelde parse edilir. `node --check` kullanılabilir; `gjs -c <dosya>` bir dosya sözdizimi doğrulama standardı olarak kullanılmaz çünkü `-c` GJS'e komut metni verir, dosya yükleme seçeneği değildir.
+
+```bash
+for f in ui/infoDialog.js ui/popupMenuButtonItems.js indicator.js saveSession.js restoreSession.js moveSession.js; do
+    node --check "$f" || exit 1
+done
+```
+
+Ardından `git diff --check` ve ilgili yerel JSON/şema doğrulaması yapılır. Salt parse başarısı, GNOME Shell API uyumluluğu veya gerçek Wayland pencere davranışı kanıtı değildir.
+
+### D. İlk tercih salt-okunur teşhis
+
+Bir hata görüldüğünde önce `cat`, `sed`, `rg`, `jq`, `gsettings list-keys`, `gnome-extensions info` ve sınırlı `journalctl` ile durum okunur. Süreç kapatma, compositor yenileme, GDM restartı veya kullanıcı oturumunu değiştirme teşhis adımı değildir.
+
+## 6. Otomatik yerel test aracı kullanım protokolü
+
+Proje kökündeki `./test_runner.sh`, geliştirici yapay zekâ için zorunlu yerel doğrulama aracıdır. Betik; JavaScript parse kontrolünü, GSettings şema derlemesini, `git diff --check` doğrulamasını, güvenli eklenti yenilemesini, `Enabled/ACTIVE` durumunu, iki menü komutunu, şema anahtarlarını ve kısa AWSM hata taramasını otomatik olarak çalıştırır.
+
+### Zorunlu döngü
+
+1. Minimal kod yamasını uygula.
+2. Değişen JavaScript dosyası için proje kökünde `./test_runner.sh <degisen-dosya.js>` çalıştır.
+3. Kod dışı değişikliklerde veya kapsamlı kontrolde `./test_runner.sh` çalıştır.
+4. `=== BUTUN TESTLER BASARILI ===` ve çıkış kodu `0` görülmeden bir sonraki geliştirmeye geçme.
+5. `[FAIL]` oluşursa yalnızca başarısız kontrolü düzelt; GNOME Shell restartı, süreç öldürme veya geniş kapsamlı yıkıcı komut çalıştırma.
+
+Bu araç gerçek üç monitörlü Wayland pencere yerleşimini tek başına kabul etmez; canlı pencere davranışı ayrıca `statik`, `yerel/sentetik` ve `canlı hedef ortamı` kanıt sınırlarıyla raporlanır.
+
+### D-Bus ile başlıksız Save doğrulaması
+
+Panel etkileşimi gerektirmeyen kayıt doğrulaması için:
+
+```bash
+./test_runner.sh --save-session FireFoxSetup
+```
+
+Bu mod mevcut canlı D-Bus servisini kullanır ve kayıt sonrasında `scripts/verify_session_state.js` ile `RESULT: PASS` ve `legacy_screen_geometry=0` koşullarını arar. Yeni bir D-Bus handler ilk kez eklenmişse, GJS modül önbelleği nedeniyle aynı GNOME Shell sürecindeki `disable/enable` döngüsü handler'ı yenilemeyebilir. Betik bu durumu açıkça `[FAIL] ... handler Shell sürecinde yuklu degil` olarak raporlar; XML introspection tek başına handler'ın çalıştığını kanıtlamaz.
+
+## 7. Çıktı ve kabul formatı
 
 Her geliştirme adımı şu kısa formatla raporlanır:
 

@@ -222,7 +222,9 @@ class AwsIndicator extends PanelMenu.Button {
         }
 
         const app = shellApp ?? this._windowTracker.get_window_app(metaWindow);
-        return restoringApps.get(app) ?? restoringApps.get(metaWindow.get_pid()) ?? null;
+        const data = restoringApps.get(app) ?? restoringApps.get(metaWindow.get_pid()) ?? null;
+        // Grouped restores have a dedicated coordinator; do not race it.
+        return data?.coordinated ? null : data;
     }
 
     _onOpenStateChanged(menu, state) {

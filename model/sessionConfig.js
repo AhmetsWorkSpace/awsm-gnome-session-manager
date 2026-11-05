@@ -46,6 +46,8 @@ class WindowTiling {
 export const SessionConfigObject = class {
 
     window_id; // str, hexadecimal on X11, int on Wayland
+    session_window_index; // zero-based position in the saved session
+    stack_index; // bottom-to-top index at snapshot time, when available
     desktop_number; // int
     pid; // int
     username; // str
@@ -77,9 +79,12 @@ export const SessionConfigObject = class {
     monitor_number;
     // TODO Primary monitor can be changed, what if the primary monitor have been changed when restoring apps? The monitor number is the same as saved monitor_number?
     is_on_primary_monitor;
+    // Mutter logical geometry of the monitor at save time; used to rebase coordinates on restore.
+    monitor_geometry;
 
     fullscreen; // boolean
     minimized; // boolean
+    maximized; // boolean; detailed legacy flags remain in window_state.meta_maximized
 
     window_tiling; // WindowTiling
 

@@ -128,7 +128,7 @@
       <default>true</default>
       <summary>Stash and restore states</summary>
       <description>
-      Stash states while Gnome Shell restarts via `Alt+F2 -> r` or `killall -3 gnome-shell`, 
+      Stash states while Gnome Shell restarts. Under Wayland, do not restart the compositor as an extension test action; use the extension-only reload procedure in DEVELOPER_TEST_RULES.md.
       and restore the windows states after the restart finishes.
       
       Only enabled on X11, since Wayland doesn't support restart on fly.
